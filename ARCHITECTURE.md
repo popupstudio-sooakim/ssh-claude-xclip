@@ -50,7 +50,8 @@
 ## 검증 (순서대로, 어디서 실행하는지 주의)
 
 ```bash
-# 맥: 캡쳐(⌃⌘⇧4) → "ssh-claude-xclip" 타이틀의 맥 알림에 경로가 뜨는지 확인 (= 업로드 완료)
+# 맥: 캡쳐(⌃⌘⇧4) 후 실패 로그가 비어 있는지 확인 (성공 시엔 아무것도 안 남는다)
+tail -5 /tmp/ssh-claude-xclip.log
 
 # 서버: 업로드 확인
 ls -t /tmp/clip-*.png | head -1        # → 방금 캡쳐한 파일
@@ -69,17 +70,22 @@ xclip -selection clipboard -t image/png -o | file -    # → PNG image data
 | 붙여넣어도 아무 반응 없음 | 마지막 업로드가 10분 경과(신선도 가드) 또는 데몬 죽음 | 다시 캡쳐. `ls -t /tmp/clip-*.png`로 새 파일이 생기는지 확인 — 안 생기면 맥에서 `launchctl list \| grep ssh-claude-xclip` |
 | 캡쳐 직후 바로 붙여넣으면 빈손 | 업로드(1~2초)가 안 끝남. 3초까진 기다려주지만 그 이상이면 포기 | **맥 알림 뜬 뒤** 붙여넣기 |
 | 엉뚱한(예전) 이미지가 붙음 | 데몬이 죽은 뒤 10분 안에 붙여넣기 → 최신 파일이 이전 캡쳐 | 맥에서 데몬 재기동 (`launchctl unload` 후 `load`) |
-| 맥 알림이 안 뜸 | 집중 모드 / 스크립트 알림 차단 | 알림 설정에서 Script Editor 허용. 업로드 여부는 서버 `ls /tmp/clip-*`로 확인 |
+| 업로드가 안 됨 (서버에 파일이 안 생김) | ssh 인증 실패·서버 다운 등 | 맥 `/tmp/ssh-claude-xclip.log`에 사유가 남는다. `ssh -o BatchMode=yes <서버> true`로 무인증 접속부터 확인 |
+| 실패 알림이 안 뜸 | 집중 모드 / 스크립트 알림 차단 (알림은 60초에 한 번으로 제한됨) | 알림 설정에서 Script Editor 허용. 사유는 로그에 매번 남으니 로그로 확인 |
+| 서버를 바꿨는데 그대로 옛 서버로 감 | 셸에서 `export`한 환경변수는 launchd 데몬에 상속되지 않음 | plist의 `EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE`를 고치고 `launchctl unload`/`load` |
 | 경로가 `[Image #N]`으로 변함 | Claude Code의 경로 자동 첨부 (끄기 불가). 의도된 동작 | 경로가 필요하면 Cmd+Shift+V(타이핑) |
 | ⌘클릭이 안 먹음 | 문서 속 자리표시자(`....`)를 클릭했거나 TUI 줄바꿈으로 경로가 쪼개짐. Claude Code 입력창 안은 재렌더링 때문에 불안정할 수 있음 | 셸에서 `ls -t /tmp/clip-*.png \| head -1` 출력을 클릭 |
 | `ssh popup-server ...` → 이름 해석 실패 | 서버에서 실행함 (별칭은 맥 config에만 있음) | 맥 터미널에서 실행 |
 
-환경변수 (기본값으로 충분, 필요시 조정):
+환경변수 (기본값으로 충분, 필요시 조정). **맥 데몬 쪽은 셸 `export`가 아니라
+plist의 `EnvironmentVariables`에 넣어야 한다** — launchd 에이전트는 셸 환경을 상속하지 않는다:
 
 | 변수 | 기본 | 어디서 | 뜻 |
 |---|---|---|---|
 | `SSH_CLAUDE_XCLIP_REMOTE` | `popup-server` | 맥 데몬 | 업로드 대상 ssh 별칭 |
 | `SSH_CLAUDE_XCLIP_PATH_SUFFIX` | (없음) | 맥 데몬 | 경로 텍스트 뒤 접미사 (`:1`이면 Cmd+V도 경로로 남음) |
+| `SSH_CLAUDE_XCLIP_LOG` | `/tmp/ssh-claude-xclip.log` | 맥 데몬 | 업로드 실패 로그 |
+| `SSH_CLAUDE_XCLIP_FAIL_NOTIFY_GAP` | `60` | 맥 데몬 | 실패 알림 최소 간격(초). 로그는 매번 남는다 |
 | `SSH_CLAUDE_XCLIP_MAX_AGE` | `600` | 서버 xclip | 이 초수보다 오래된 clip 파일은 무시 |
 | `SSH_CLAUDE_XCLIP_WAIT` | `3` | 서버 xclip | 업로드 완료를 기다리는 최대 초수 |
 
@@ -109,3 +115,12 @@ xclip -selection clipboard -t image/png -o | file -    # → PNG image data
   깨질 수 있다. 깨지면 `xclip -selection clipboard -t TARGETS -o`부터 다시 진단.
 - macOS 전용. 지원 포맷은 실측 확인된 png·jpg·jpeg (heic는 Claude Code 미첨부로 제외).
   Ctrl+V 직접첨부는 PNG 한 장 전용, jpg/jpeg·여러 장은 경로 채널(⌘V·⌘⇧V)로만.
+- 서버 쪽 전제: **bash**(`$SECONDS`, `[ -O ]`), `stat`(GNU `-c %Y` 또는 BSD `-f %m`),
+  그리고 ssh 업로드와 Claude Code가 **같은 계정·같은 `/tmp` 네임스페이스**를 봐야 한다.
+  Docker/devcontainer나 systemd `PrivateTmp=yes` 아래에서 Claude를 띄우면 /tmp가 분리돼 동작하지 않는다.
+  이식 전 점검표는 README의 "다른 서버에 붙일 때 미리 확인할 것" 참고.
+- **VS Code 전용** — ⌘⇧V 경로 타이핑을 담당하는 미니 확장이 `~/.vscode/extensions`에만 설치된다.
+  Cursor(`~/.cursor/extensions`)·VS Code Insiders(`~/.vscode-insiders/extensions`)·JetBrains·순수 터미널은
+  아직 지원하지 않는다. 업로드와 Ctrl+V(가짜 xclip) 경로는 에디터와 무관하므로 거기서도 동작한다.
+- 맥 데몬은 **한 번에 한 서버**에만 올린다. 다른 서버에 붙은 창에서 ⌘⇧V를 누르면
+  그 서버엔 없는 경로가 타이핑된다.

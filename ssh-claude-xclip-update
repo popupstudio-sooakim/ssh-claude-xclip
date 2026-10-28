@@ -14,11 +14,20 @@ if [ "$(uname)" = "Darwin" ]; then
 
   mkdir -p ~/bin
   cp "$tmp/repo/ssh-claude-xclip-mac.py" ~/bin/
+  # VS Code 전용. Cursor(~/.cursor/extensions)·Insiders는 아직 다루지 않는다 (README 참고).
+  mkdir -p ~/.vscode/extensions
   rm -rf ~/.vscode/extensions/ssh-claude-xclip-vscode
   cp -r "$tmp/repo/ssh-claude-xclip-vscode" ~/.vscode/extensions/
-  # plist는 설치 때 사용자명이 박혀 있어 덮지 않는다 (바뀔 일 거의 없음)
-
+  # plist는 설치 때 사용자명이 박혀 있어 통째로 덮지 않는다. 대신 새로 생긴 키만 채워 넣는다
+  # (기존 설치본엔 EnvironmentVariables/StandardErrorPath가 없어서 서버 변경·실패 로그가 안 먹는다).
   plist=~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
+  pb=/usr/libexec/PlistBuddy
+  if [ -f "$plist" ]; then
+    $pb -c 'Add :EnvironmentVariables dict' "$plist" 2>/dev/null || true
+    $pb -c 'Add :EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE string popup-server' "$plist" 2>/dev/null || true
+    $pb -c 'Add :StandardErrorPath string /tmp/ssh-claude-xclip.log' "$plist" 2>/dev/null || true
+  fi
+
   launchctl unload "$plist" 2>/dev/null || true
   launchctl load "$plist"
   echo "✅ 업데이트 완료."

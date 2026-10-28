@@ -8,6 +8,8 @@
 #   → Cmd+Shift+V: 미니 확장(ssh-claude-xclip-vscode)이 경로를 터미널에 타이핑 (⌘클릭으로 열림)
 #
 # 설정은 환경변수로: SSH_CLAUDE_XCLIP_REMOTE(기본 popup-server)
+#   — launchd는 셸 환경을 상속하지 않으므로 plist의 EnvironmentVariables로 줄 것
+# 실패 로그: /tmp/ssh-claude-xclip.log (SSH_CLAUDE_XCLIP_LOG)
 # 경로 텍스트 뒤에 붙일 접미사 SSH_CLAUDE_XCLIP_PATH_SUFFIX (기본 없음 → Cmd+V 붙여넣기는 [Image #N]으로 변환됨.
 # ":1"(줄번호 문법)로 주면 Cmd+V도 경로 텍스트로 남는다 — 존재하지 않는 파일명이라 변환 회피)
 # 의존성 없음 (macOS 기본 python3 + osascript + ssh)
@@ -19,6 +21,8 @@ import time
 
 REMOTE = os.environ.get("SSH_CLAUDE_XCLIP_REMOTE", "popup-server")
 PATH_SUFFIX = os.environ.get("SSH_CLAUDE_XCLIP_PATH_SUFFIX", "")
+LOG = os.environ.get("SSH_CLAUDE_XCLIP_LOG", "/tmp/ssh-claude-xclip.log")
+FAIL_NOTIFY_GAP = float(os.environ.get("SSH_CLAUDE_XCLIP_FAIL_NOTIFY_GAP", "60"))
 
 # Finder에서 복사(⌘C)한 "이미지 파일"만 취급 — 이 확장자들만 업로드 대상.
 # 실측으로 Claude Code 첨부가 확인된 포맷만 둔다 (png/jpg 확인, heic는 미첨부라 제외).
@@ -97,14 +101,44 @@ def jxa(script, *args):
     return r.stdout.strip()
 
 def notify(msg):
+    # 따옴표가 섞이면 osascript 문자열이 깨지므로 제거
+    msg = msg.replace('"', "'").replace("\\", "/")
     subprocess.run(["osascript", "-e",
                     f'display notification "{msg}" with title "ssh-claude-xclip"'],
                    capture_output=True, timeout=5)
 
+_last_fail = 0.0
+
+def fail(msg, detail=""):
+    # 업로드 실패는 반드시 보이게 한다 — 예전엔 except로 통째로 삼켜서 "왜 안 되지"만 남았다.
+    # 로그는 매번, 맥 알림은 FAIL_NOTIFY_GAP초에 한 번만 (서버가 꺼져 있으면 캡쳐마다 뜨므로).
+    global _last_fail
+    line = time.strftime("%Y-%m-%d %H:%M:%S") + f" [FAIL] {msg}"
+    if detail:
+        line += "\n    " + detail.strip().replace("\n", "\n    ")
+    try:
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    now = time.time()
+    if now - _last_fail >= FAIL_NOTIFY_GAP:
+        _last_fail = now
+        notify(msg)
+
 def upload(local_path, rpath):
+    # 성공하면 True. 실패하면 사유를 로그/알림에 남기고 False (조용한 실패 금지).
     with open(local_path, "rb") as f:
-        subprocess.run(["ssh", REMOTE, f"cat > {rpath}"],
-                       stdin=f, capture_output=True, timeout=60, check=True)
+        try:
+            r = subprocess.run(["ssh", "-o", "BatchMode=yes", REMOTE, f"cat > {rpath}"],
+                               stdin=f, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            fail(f"업로드 시간초과 ({REMOTE}) — ssh가 응답/인증 대기 중일 수 있음")
+            return False
+    if r.returncode != 0:
+        fail(f"업로드 실패 ({REMOTE})", r.stderr)
+        return False
+    return True
 
 def upload_parallel(pairs):
     # pairs: [(local_path, rpath), ...] — ssh 업로드를 전부 동시에 띄우고 한꺼번에 기다린다.
@@ -113,19 +147,25 @@ def upload_parallel(pairs):
     jobs = []
     for lp, rpath in pairs:
         fh = open(lp, "rb")
-        p = subprocess.Popen(["ssh", REMOTE, f"cat > {rpath}"],
-                             stdin=fh, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(["ssh", "-o", "BatchMode=yes", REMOTE, f"cat > {rpath}"],
+                             stdin=fh, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True)
         jobs.append((p, fh, rpath))
-    ok = []
+    ok, errs = [], []
     for p, fh, rpath in jobs:
         try:
-            rc = p.wait(timeout=60)
+            _, err = p.communicate(timeout=60)
+            rc = p.returncode
         except subprocess.TimeoutExpired:
             p.kill()
-            rc = 1
+            rc, err = 1, "시간초과(60초)"
         fh.close()
         if rc == 0:
             ok.append(rpath)
+        else:
+            errs.append(f"{os.path.basename(rpath)}: {(err or '').strip()}")
+    if errs:
+        fail(f"업로드 실패 {len(errs)}/{len(pairs)}장 ({REMOTE})", "\n".join(errs))
     return ok
 
 # ── 클립보드 감시 → 자동 업로드 + 경로 병기 ─────────────────
@@ -160,12 +200,14 @@ def watcher():
                 continue
             name = "clip-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".png"
             rpath = f"/tmp/{name}"
-            upload(tmp, rpath)
-            # 클립보드에 이미지 + 경로 텍스트를 함께 담고, 우리가 만든 변경은 무시
-            last = jxa(JXA_REWRITE, tmp, rpath + PATH_SUFFIX) or last
+            if upload(tmp, rpath):
+                # 클립보드에 이미지 + 경로 텍스트를 함께 담고, 우리가 만든 변경은 무시
+                last = jxa(JXA_REWRITE, tmp, rpath + PATH_SUFFIX) or last
+            # 업로드 실패면 클립보드를 건드리지 않는다 — 원본 이미지가 그대로 남아
+            # 로컬 붙여넣기는 살아 있고, 실패는 fail()이 알림/로그로 보고한다.
             os.unlink(tmp)
-        except Exception:
-            pass
+        except Exception as e:
+            fail(f"데몬 오류: {type(e).__name__}", str(e))
 
 if __name__ == "__main__":
     watcher()

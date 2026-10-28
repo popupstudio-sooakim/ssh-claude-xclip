@@ -5,7 +5,7 @@
 
 ## 사용법
 
-캡쳐(⌃⌘⇧4)하면 자동으로 서버에 업로드된다. **맥 알림이 뜨면 준비 완료** — Claude Code 터미널에서:
+캡쳐(⌃⌘⇧4)하면 자동으로 서버에 업로드된다 (1~2초). Claude Code 터미널에서:
 
 | 키 | 결과 | 용도 |
 |---|---|---|
@@ -18,6 +18,30 @@
   확실하고, ⌘V 단일 첨부·Ctrl+V는 한 장씩.)
 - 업로드 파일은 서버 `/tmp`에 있어 재부팅 때 자동 삭제 — 정리 불필요,
   오래 볼 이미지는 딴 데 저장할 것.
+
+## 요구사항
+
+| | 필요한 것 |
+|---|---|
+| 맥 | macOS + **VS Code** (Remote-SSH로 서버에 접속) |
+| 에디터 | **VS Code 전용.** Cursor·VS Code Insiders·JetBrains·순수 터미널은 **아직 지원하지 않는다** (아래 참고) |
+| 서버 | Linux(+bash), 맥에서 **비밀번호 없이** ssh 접속 가능 |
+
+### Cursor / Insiders는 아직 안 된다
+
+⌘⇧V(경로 타이핑)를 담당하는 미니 확장이 VS Code 확장 폴더(`~/.vscode/extensions`)에만 설치되기 때문이다.
+Cursor는 `~/.cursor/extensions`, Insiders는 `~/.vscode-insiders/extensions`를 쓰고, 설치/업데이트 스크립트가
+아직 그 경로를 다루지 않는다. 순수 터미널(iTerm/Terminal)엔 확장이라는 개념 자체가 없다.
+
+직접 복사해 쓰면 ⌘⇧V가 동작할 수는 있지만(아래), **검증된 조합이 아니고 업데이트 스크립트가 덮어주지 않는다**:
+
+```bash
+# Cursor (미검증 — 안 되면 VS Code를 쓸 것)
+mkdir -p ~/.cursor/extensions && cp -r ssh-claude-xclip-vscode ~/.cursor/extensions/
+```
+
+업로드 자체(캡쳐 → 서버 `/tmp`)는 에디터와 무관한 맥 데몬이 하므로 어디서든 동작한다.
+즉 Cursor에서도 **Ctrl+V(가짜 xclip 경유 첨부)는 그대로 되고**, ⌘⇧V 경로 타이핑만 빠진다.
 
 ## 설치법
 
@@ -47,16 +71,48 @@ cp ai.popup.ssh-claude-xclip.plist ~/Library/LaunchAgents/
 sed -i '' "s/YOURNAME/$(whoami)/" ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
 launchctl load ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
 
-cp -r ssh-claude-xclip-vscode ~/.vscode/extensions/
+mkdir -p ~/.vscode/extensions && cp -r ssh-claude-xclip-vscode ~/.vscode/extensions/
 ```
 
 **2) 서버에서**
 ```bash
 git clone https://github.com/Sooa-Popupstudio/ssh-claude-xclip.git ~/ssh-claude-xclip
+mkdir -p ~/.local/bin
 ln -sf ~/ssh-claude-xclip/ssh-claude-xclip-server ~/.local/bin/xclip
+
+# 확인: 가짜 xclip이 진짜 xclip보다 PATH 앞에 있어야 한다
+command -v xclip     # → /home/<나>/.local/bin/xclip 이 나와야 성공
 ```
 
-설치 확인: 캡쳐 한 번 → "ssh-claude-xclip" 타이틀의 맥 알림에 경로가 뜨면 성공.
+`~/.local/bin`이 안 나오거나 `/usr/bin/xclip`이 나오면 PATH 앞순위가 아니다. `~/.bashrc`(zsh면 `~/.zshrc`)에 아래를 넣고 셸을 다시 열 것:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+설치 확인: 맥에서 캡쳐 한 번 → 서버에서 `ls -t /tmp/clip-*.png | head -1`에 방금 파일이 보이면 성공.
+(안 보이면 맥의 `/tmp/ssh-claude-xclip.log`에 실패 사유가 남는다.)
+
+**서버를 바꾸려면** `~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist`의
+`SSH_CLAUDE_XCLIP_REMOTE` 값을 고치고 데몬을 재기동한다 (launchd는 셸의 `export`를 상속하지 않아
+터미널에서 환경변수를 줘도 데몬엔 닿지 않는다):
+
+```bash
+launchctl unload ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
+launchctl load   ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
+```
+
+### 다른 서버에 붙일 때 미리 확인할 것
+
+| 확인 | 명령 (서버에서) | 왜 |
+|---|---|---|
+| Linux/GNU 또는 BSD stat | `stat -c %Y /tmp \|\| stat -f %m /tmp` | 둘 다 실패하면 신선도 검사가 전부 "오래됨"이 된다 |
+| bash 존재 | `command -v bash` | 가짜 xclip이 bash 전용 (`$SECONDS`, `[ -O ]`) |
+| xclip 앞순위 | `command -v xclip` | 진짜 xclip이 먼저 잡히면 가로채기 실패 |
+| `/tmp` 공유 | 맥에서 `ssh <서버> 'touch /tmp/t'` → Claude 터미널에서 `ls /tmp/t` | Docker/devcontainer나 systemd `PrivateTmp`면 /tmp가 분리돼 안 보인다 |
+| 무인증 ssh | 맥에서 `ssh -o BatchMode=yes <서버> true` | 비밀번호·2FA 프롬프트가 뜨면 데몬이 업로드 못 한다 |
+
+업로드하는 계정과 Claude Code를 띄우는 계정이 같아야 한다 (가짜 xclip이 자기 소유 파일만 집는다).
 
 ## 업데이트
 

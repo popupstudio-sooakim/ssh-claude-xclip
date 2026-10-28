@@ -8,7 +8,16 @@
     <string>/usr/bin/python3</string>
     <string>/Users/YOURNAME/bin/ssh-claude-xclip-mac.py</string>
   </array>
+  <!-- launchd 에이전트는 셸 환경을 상속하지 않는다. 터미널에서 export 해봐야 데몬엔 안 닿으므로
+       설정은 반드시 여기서 준다. 업로드 대상 서버를 바꾸려면 아래 값을 고치고 데몬 재기동:
+         launchctl unload ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
+         launchctl load   ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SSH_CLAUDE_XCLIP_REMOTE</key><string>popup-server</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/ssh-claude-xclip.log</string>
 </dict>
 </plist>
