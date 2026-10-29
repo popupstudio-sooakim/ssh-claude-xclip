@@ -79,6 +79,7 @@ sequenceDiagram
 파일만 집으므로, 데몬은 쓰는 계정 전부에 뿌려두고 "한 곳이라도 성공하면 성공"으로 친다.
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}} }%%
 graph LR
     D["맥 데몬"]
     D ==>|"ssh (키 인증)"| A["ubuntu@서버<br/>/tmp/clip-….png"]
