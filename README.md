@@ -27,22 +27,6 @@
 | 에디터 | **VS Code 전용.** Cursor·VS Code Insiders·JetBrains·순수 터미널은 **아직 지원하지 않는다** (아래 참고) |
 | 서버 | Linux(+bash), 맥에서 **비밀번호 없이** ssh 접속 가능 |
 
-### Cursor / Insiders는 아직 안 된다
-
-⌘⇧V(경로 타이핑)를 담당하는 미니 확장이 VS Code 확장 폴더(`~/.vscode/extensions`)에만 설치되기 때문이다.
-Cursor는 `~/.cursor/extensions`, Insiders는 `~/.vscode-insiders/extensions`를 쓰고, 설치/업데이트 스크립트가
-아직 그 경로를 다루지 않는다. 순수 터미널(iTerm/Terminal)엔 확장이라는 개념 자체가 없다.
-
-직접 복사해 쓰면 ⌘⇧V가 동작할 수는 있지만(아래), **검증된 조합이 아니고 업데이트 스크립트가 덮어주지 않는다**:
-
-```bash
-# Cursor (미검증 — 안 되면 VS Code를 쓸 것)
-mkdir -p ~/.cursor/extensions && cp -r ssh-claude-xclip-vscode ~/.cursor/extensions/
-```
-
-업로드 자체(캡쳐 → 서버 `/tmp`)는 에디터와 무관한 맥 데몬이 하므로 어디서든 동작한다.
-즉 Cursor에서도 **Ctrl+V(가짜 xclip 경유 첨부)는 그대로 되고**, ⌘⇧V 경로 타이핑만 빠진다.
-
 ## 설치법
 
 **0) SSH 별칭 등록 (맥에서, vscode 상에서 왼쪽 하단에 이미 ssh:popups-server로 설정이 되어 있다면 스킵)**
