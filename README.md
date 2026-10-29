@@ -3,6 +3,64 @@
 맥에서 캡쳐한 스크린샷을 SSH 너머 서버의 Claude Code에 바로 붙여넣는 도구.
 서버에 포트를 열지 않는다. 동작 원리·트러블슈팅은 [ARCHITECTURE.md](ARCHITECTURE.md) 참고.
 
+<details>
+<summary><b>In English</b> (full docs below are in Korean)</summary>
+
+### What it is
+
+Paste a Mac screenshot straight into Claude Code running on a remote server over SSH.
+**No listening port, no reverse tunnel, no token, nothing to run as a service on the server.**
+
+### How it's different
+
+Existing tools **pull at paste time**: the server reaches back to your Mac through an SSH
+reverse tunnel, which needs a dedicated port, a bearer token, a binary deployed on the server,
+and sometimes an Xvfb bridge to fake a clipboard on a headless box. Others upload at keypress,
+so you wait every time.
+
+This one **pushes at capture time**. A small `launchd` daemon on the Mac watches the pasteboard
+and, the moment you take a screenshot, ships the file to the server's `/tmp` over plain outbound
+SSH, before you ever hit paste. At paste time the server only reads a local file, so the tunnel
+and the port disappear.
+
+Two paste modes, because showing an image to an AI and seeing it yourself are different needs:
+
+| Key | Result |
+|---|---|
+| `Cmd+V` | attaches the image to Claude as `[Image #N]` |
+| `Cmd+Shift+V` | types the server path instead, so you can `Cmd`-click and open the image yourself |
+
+No cleanup code: the server's `/tmp` empties itself (on reboot, and swept periodically before
+that). Save anything worth keeping somewhere else.
+
+### Moving parts
+
+| File | Role | Installed at |
+|---|---|---|
+| `ssh-claude-xclip-mac.py` | Mac daemon: watch clipboard, pre-upload (~210 lines, zero deps: stock `python3`, `osascript`, `ssh`) | Mac `~/bin/` |
+| `ai.popup.ssh-claude-xclip.plist` | launchd registration | Mac `~/Library/LaunchAgents/` |
+| `ssh-claude-xclip-server` | fake `xclip` intercepting the call Claude Code already makes (~60 lines of bash) | Server `~/.local/bin/xclip` |
+| `ssh-claude-xclip-vscode/` | mini VS Code extension for `Cmd+Shift+V` (21 lines) | Mac `~/.vscode/extensions/` |
+
+### Requirements
+
+macOS + **VS Code** (Remote-SSH), a Linux server with `bash`, and password-less SSH from the Mac.
+Uploads and Claude Code must run as the **same account**, sharing the **same `/tmp`** (a container
+or systemd `PrivateTmp` breaks this).
+
+### Known limits
+
+- **VS Code only.** Cursor and VS Code Insiders install extensions elsewhere, so `Cmd+Shift+V` is
+  missing there; uploads and `Ctrl+V` still work.
+- **One server at a time** (set by `SSH_CLAUDE_XCLIP_REMOTE` in the plist).
+- `Ctrl+V` direct-attach is single-PNG only; jpg/jpeg and multi-image go through the path channel.
+- Relies on Claude Code's internal `xclip` call signature, so an update there can break it.
+
+Install steps are in the Korean sections below and read fine as shell commands.
+Design notes and troubleshooting: [ARCHITECTURE.md](ARCHITECTURE.md) (Korean).
+
+</details>
+
 ## 사용법
 
 캡쳐(⌃⌘⇧4)하면 자동으로 서버에 업로드된다 (1~2초). Claude Code 터미널에서:
