@@ -239,7 +239,7 @@ doctor_mac() {
   probe="/tmp/ssh-claude-xclip-doctor.$$"
   for r in $rs; do
     if echo "doctor" | SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=force \
-         ssh -o ConnectTimeout=10 "$r" "cat > $probe && rm -f $probe" 2>/dev/null; then
+         ssh -o ConnectTimeout=10 "$r" "umask 077; cat > $probe && rm -f $probe" 2>/dev/null; then
       c_ok "$r — 업로드 성공"
     else
       c_bad "$r — 업로드 실패 (위 2번 사유와 같습니다)"

@@ -157,6 +157,24 @@ def fail(msg, detail=""):
         _last_fail = now
         notify(msg)
 
+def remote_path(rpath, remote):
+    """대상이 둘 이상이면 파일명에 별칭을 박아 경로를 갈라놓는다.
+
+    같은 서버의 다른 계정 둘을 대상으로 두면 /tmp 가 공유된다. 그때 같은 경로로
+    올리면 먼저 쓴 쪽이 파일 주인이 되고, 진 쪽은 남의 파일을 덮어쓸 수 없어
+    'Permission denied' 로 조용히 떨어진다 — 결국 매번 한 계정만 받게 된다.
+    (파일 권한 문제가 아니다. /tmp 는 sticky 라 소유자만 손댈 수 있다.)
+
+    대상이 하나면 예전 그대로 둔다. 대부분의 설치가 여기 해당하고, 쓸데없이
+    길어진 파일명을 ⌘⇧V 로 타이핑하게 만들 이유가 없다.
+    """
+    if len(REMOTES) <= 1:
+        return rpath
+    base, ext = os.path.splitext(rpath)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", remote)
+    return f"{base}-{safe}{ext}"
+
+
 def upload_all(pairs):
     """pairs: [(로컬경로, 원격경로), ...] 를 REMOTES "전부"에 병렬 업로드.
 
@@ -173,14 +191,21 @@ def upload_all(pairs):
     jobs = []
     for lp, rpath in pairs:
         for remote in REMOTES:
+            rp = remote_path(rpath, remote)
             fh = open(lp, "rb")  # 서버마다 따로 읽어야 하므로 핸들도 따로
-            p = subprocess.Popen(SSH_CMD + [remote, f"cat > {rpath}"],
+            # umask 077 → 파일이 0600으로 생성된다. 이게 없으면 원격 셸의 umask를
+            # 그대로 따르는데, 흔한 0002면 0664가 되어 같은 서버에 셸이 있는
+            # 누구나 남의 스크린샷을 읽을 수 있다. /tmp는 공용(drwxrwxrwt)이고
+            # 사용자별 임시 디렉터리를 쓰지 않으므로, 권한이 유일한 차단막이다.
+            # (서버의 가짜 xclip이 하는 [ -O ] 검사는 "내 파일 고르기"이지 접근 제어가 아니다.)
+            p = subprocess.Popen(SSH_CMD + [remote, f"umask 077; cat > {rp}"],
                                  stdin=fh, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.PIPE, text=True, env=SSH_ENV)
-            jobs.append((p, fh, rpath, remote))
+            jobs.append((p, fh, rpath, rp, remote))
 
-    ok, errs = set(), []
-    for p, fh, rpath, remote in jobs:
+    done, errs = [], []          # done: 성공한 "실제 원격 경로" (대상별로 다를 수 있다)
+    ok_src = set()               # ok_src: 한 곳 이상 성공한 "원본 장"
+    for p, fh, rpath, rp, remote in jobs:
         try:
             _, err = p.communicate(timeout=60)
             rc = p.returncode
@@ -189,11 +214,12 @@ def upload_all(pairs):
             rc, err = 1, "시간초과(60초) — ssh가 응답/인증 대기 중일 수 있음"
         fh.close()
         if rc == 0:
-            ok.add(rpath)
+            done.append(rp)
+            ok_src.add(rpath)
         else:
-            errs.append(f"{remote} ← {os.path.basename(rpath)}: {(err or '').strip()}")
+            errs.append(f"{remote} ← {os.path.basename(rp)}: {(err or '').strip()}")
 
-    lost = [rp for _, rp in pairs if rp not in ok]
+    lost = [rp for _, rp in pairs if rp not in ok_src]
     if lost:
         # 모든 서버에서 실패한 장이 있다 — 붙여넣기가 실제로 안 되는 상황이라 알림까지.
         fail(f"업로드 실패 {len(lost)}/{len(pairs)}장 — 대상 서버 전부 실패",
@@ -203,7 +229,7 @@ def upload_all(pairs):
         # (TOTP 걸린 계정에 ControlMaster 세션이 없을 때가 주로 여기로 온다.)
         log("WARN", f"일부 서버 업로드 실패 ({len(errs)}건) — 나머지 서버는 성공",
             "\n".join(errs))
-    return [rp for _, rp in pairs if rp in ok]
+    return done
 
 # ── 클립보드 감시 → 자동 업로드 + 경로 병기 ─────────────────
 def watcher():
@@ -237,9 +263,13 @@ def watcher():
                 continue
             name = "clip-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".png"
             rpath = f"/tmp/{name}"
-            if upload_all([(tmp, rpath)]):
-                # 클립보드에 이미지 + 경로 텍스트를 함께 담고, 우리가 만든 변경은 무시
-                last = jxa(JXA_REWRITE, tmp, rpath + PATH_SUFFIX) or last
+            done = upload_all([(tmp, rpath)])
+            if done:
+                # 클립보드에 이미지 + 경로 텍스트를 함께 담고, 우리가 만든 변경은 무시.
+                # 대상이 여럿이면 경로도 여럿이다 — 지금 어느 계정에 붙어 있는지는
+                # 데몬이 알 수 없으므로 전부 적어주고 사람이 고르게 한다.
+                text = "\n".join(rp + PATH_SUFFIX for rp in done)
+                last = jxa(JXA_REWRITE, tmp, text) or last
             # 업로드 실패면 클립보드를 건드리지 않는다 — 원본 이미지가 그대로 남아
             # 로컬 붙여넣기는 살아 있고, 실패는 fail()이 알림/로그로 보고한다.
             os.unlink(tmp)
