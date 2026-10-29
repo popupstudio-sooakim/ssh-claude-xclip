@@ -70,7 +70,9 @@ xclip -selection clipboard -t image/png -o | file -    # → PNG image data
 | 붙여넣어도 아무 반응 없음 | 마지막 업로드가 10분 경과(신선도 가드) 또는 데몬 죽음 | 다시 캡쳐. `ls -t /tmp/clip-*.png`로 새 파일이 생기는지 확인 — 안 생기면 맥에서 `launchctl list \| grep ssh-claude-xclip` |
 | 캡쳐 직후 바로 붙여넣으면 빈손 | 업로드(1~2초)가 안 끝남. 3초까진 기다려주지만 그 이상이면 포기 | **맥 알림 뜬 뒤** 붙여넣기 |
 | 엉뚱한(예전) 이미지가 붙음 | 데몬이 죽은 뒤 10분 안에 붙여넣기 → 최신 파일이 이전 캡쳐 | 맥에서 데몬 재기동 (`launchctl unload` 후 `load`) |
-| 업로드가 안 됨 (서버에 파일이 안 생김) | ssh 인증 실패·서버 다운 등 | 맥 `/tmp/ssh-claude-xclip.log`에 사유가 남는다. `ssh -o BatchMode=yes <서버> true`로 무인증 접속부터 확인 |
+| 업로드가 안 됨 (서버에 파일이 안 생김) | ssh 인증 실패·서버 다운 등 | 맥 `/tmp/ssh-claude-xclip.log`에 사유가 남는다. 무인증 접속 확인은 `ssh -o ConnectTimeout=10 <서버> true </dev/null` 로 — **`BatchMode=yes`로 확인하지 말 것**(아래) |
+| 올린 파일은 있는데 ⌘V/Ctrl+V가 못 집음 | 업로드 계정과 Claude Code 계정이 다름 — 가짜 xclip은 자기 소유 파일만 집는다 | `ls -l /tmp/clip-*` 로 주인 확인. 계정을 여럿 쓴다면 `SSH_CLAUDE_XCLIP_REMOTE`에 쉼표로 전부 나열 |
+| 서버가 접속마다 인증 코드(TOTP)를 요구 | 사람 없는 데몬은 코드를 넣을 수 없다 | `~/.ssh/config`에 `ControlMaster auto` / `ControlPath ~/.ssh/cm-%C` / `ControlPersist 8h` 를 걸고 VS Code로 재접속 — 그 세션에 데몬이 얹힌다 |
 | 실패 알림이 안 뜸 | 집중 모드 / 스크립트 알림 차단 (알림은 60초에 한 번으로 제한됨) | 알림 설정에서 Script Editor 허용. 사유는 로그에 매번 남으니 로그로 확인 |
 | 서버를 바꿨는데 그대로 옛 서버로 감 | 셸에서 `export`한 환경변수는 launchd 데몬에 상속되지 않음 | plist의 `EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE`를 고치고 `launchctl unload`/`load` |
 | 경로가 `[Image #N]`으로 변함 | Claude Code의 경로 자동 첨부 (끄기 불가). 의도된 동작 | 경로가 필요하면 Cmd+Shift+V(타이핑) |
@@ -82,12 +84,40 @@ plist의 `EnvironmentVariables`에 넣어야 한다** — launchd 에이전트�
 
 | 변수 | 기본 | 어디서 | 뜻 |
 |---|---|---|---|
-| `SSH_CLAUDE_XCLIP_REMOTE` | `popup-server` | 맥 데몬 | 업로드 대상 ssh 별칭 |
+| `SSH_CLAUDE_XCLIP_REMOTE` | `popup-server` | 맥 데몬 | 업로드 대상 ssh 별칭. **쉼표로 여러 개** 가능 — 전부에 병렬 업로드하고 한 곳이라도 성공하면 성공 |
 | `SSH_CLAUDE_XCLIP_PATH_SUFFIX` | (없음) | 맥 데몬 | 경로 텍스트 뒤 접미사 (`:1`이면 Cmd+V도 경로로 남음) |
 | `SSH_CLAUDE_XCLIP_LOG` | `/tmp/ssh-claude-xclip.log` | 맥 데몬 | 업로드 실패 로그 |
 | `SSH_CLAUDE_XCLIP_FAIL_NOTIFY_GAP` | `60` | 맥 데몬 | 실패 알림 최소 간격(초). 로그는 매번 남는다 |
 | `SSH_CLAUDE_XCLIP_MAX_AGE` | `600` | 서버 xclip | 이 초수보다 오래된 clip 파일은 무시 |
 | `SSH_CLAUDE_XCLIP_WAIT` | `3` | 서버 xclip | 업로드 완료를 기다리는 최대 초수 |
+
+
+## 데몬의 ssh 호출 규약 (바꾸기 전에 읽을 것)
+
+**`BatchMode=yes`를 쓰지 않는다.** 직관적으로는 "비대화형이니 BatchMode가 맞다" 싶지만,
+이 옵션은 keyboard-interactive 인증 *방식 자체*를 클라이언트가 협상에서 빼버린다.
+서버가 `AuthenticationMethods publickey,keyboard-interactive`를 요구하면,
+TOTP가 설정돼 있지 않아 프롬프트 없이 그냥 통과할 계정까지 전부 거부된다.
+실제로 이 한 줄 때문에 업로드가 통째로 죽은 적이 있고, 증상이 "2FA 때문에 막힌 것"처럼
+보여서 오진하기 쉽다.
+
+**대신 askpass를 강제로 실패시킨다.** `SSH_ASKPASS=/usr/bin/false` +
+`SSH_ASKPASS_REQUIRE=force`. 데몬에는 TTY가 없어 프롬프트에 답할 사람이 없는데, 그냥 두면
+ssh가 멈춰 있거나 — 더 나쁘게는 — stdin으로 흘려보내는 **이미지 데이터를 프롬프트가
+읽어버린다**. askpass를 강제 실패시키면 프롬프트가 뜨는 순간 즉시 끝난다.
+
+정리하면 계정별로 이렇게 갈린다:
+
+| 서버 쪽 상태 | 결과 |
+|---|---|
+| keyboard-interactive 요구 없음 | 성공 |
+| 요구하지만 TOTP 미설정(프롬프트 없이 통과) | 성공 — BatchMode를 쓰면 여기서 깨진다 |
+| TOTP 설정됨, ControlMaster 세션 있음 | 성공 (인증 절차 자체가 안 일어남) |
+| TOTP 설정됨, 세션 없음 | 즉시 실패 + 로그 |
+
+**ControlMaster 옵션은 데몬이 지정하지 않는다.** `~/.ssh/config`에만 둔다 — VS Code
+Remote-SSH도 같은 config를 읽는 시스템 ssh를 쓰므로, 양쪽이 같은 `ControlPath`를 봐야
+사람이 인증해둔 소켓을 데몬이 재사용할 수 있다. 데몬이 자기만의 경로를 들고 있으면 공유가 깨진다.
 
 ## 여러 명이 같이 쓸 때
 
