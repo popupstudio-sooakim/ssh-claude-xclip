@@ -4,20 +4,95 @@
 
 ## 구조
 
+```mermaid
+graph LR
+    subgraph MAC["🖥️ 맥 (로컬)"]
+        PB["클립보드<br/>NSPasteboard"]
+        D["ssh-claude-xclip-mac.py<br/>launchd 상주 데몬"]
+        EXT["VS Code 미니 확장<br/>⌘⇧V"]
+    end
+
+    subgraph SRV["☁️ 서버 (SSH 너머, 헤드리스)"]
+        TMP["/tmp/clip-*.png"]
+        FX["~/.local/bin/xclip<br/>가짜 xclip · bash 60줄"]
+        CC["Claude Code"]
+    end
+
+    PB -->|"changeCount 감시 (0.8초)"| D
+    D ==>|"ssh 'cat > /tmp/…'<br/><b>캡쳐 즉시 업로드</b>"| TMP
+    CC -->|"xclip -selection clipboard -t image/png -o"| FX
+    FX -->|"내 소유 · 최신 파일"| TMP
+    EXT -.->|"경로 텍스트 타이핑"| CC
 ```
-[맥 클립보드] ← 상주 데몬(ssh-claude-xclip-mac.py, launchd)이 감시
-      └→ 새 이미지 감지 → ssh로 서버 /tmp/clip-*.png 업로드 → 클립보드에 "이미지+경로" 병기
-                                        │
-   서버 Claude Code가 붙여넣기 → 가짜 xclip(ssh-claude-xclip-server)이 /tmp의 최신 파일을 읽음
-   Cmd+Shift+V → 미니 VS Code 확장(ssh-claude-xclip-vscode)이 경로를 터미널에 타이핑
+
+서버로 들어가는 선은 **평범한 아웃바운드 `ssh` 하나뿐**이다. 리스닝 포트도, 역터널도,
+서버에 상주시킬 프로세스도 없다.
+
+### 왜 포트가 필요 없나 — 시점이 다르기 때문
+
+기존 도구들은 **붙여넣는 순간** 서버가 맥의 클립보드를 가지러 온다. 그 "가지러 오는" 경로가
+역터널과 포트를 요구한다. 이 도구는 방향과 시점을 뒤집어, **캡쳐하는 순간** 맥이 먼저 올려둔다.
+붙여넣기 시점엔 서버가 자기 로컬 파일만 읽으면 되므로 들어올 경로 자체가 필요 없다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 사람
+    participant P as 맥 클립보드
+    participant D as 맥 데몬
+    participant T as 서버 /tmp
+    participant FX as 가짜 xclip
+    participant C as Claude Code
+
+    rect rgba(130,170,255,0.12)
+    Note over U,T: ① 캡쳐 시점 — 네트워크 일은 여기서 이미 끝난다
+    U->>P: ⌃⌘⇧4 캡쳐
+    D->>P: changeCount 변화 감지
+    D->>T: ssh cat > /tmp/clip-….png
+    D->>P: 클립보드를 "이미지 + 경로" 로 교체
+    end
+
+    rect rgba(130,255,170,0.12)
+    Note over U,C: ② 붙여넣기 시점 — 왕복 없음. 로컬 파일 read 한 번
+    U->>C: ⌘V
+    C->>FX: xclip … -o
+    FX->>T: 내 소유 최신 PNG 찾기
+    T-->>FX: PNG 바이트
+    FX-->>C: stdout 으로 전달
+    C-->>U: [Image #N] 첨부
+    end
 ```
+
+### 설치 구성
 
 | 파일 | 역할 | 설치 위치 |
 |---|---|---|
+| `ssh-claude-xclip` | 맥/서버 공용 CLI (`install`·`update`·`status`·`doctor`·`remote`) | 맥 `~/bin/`, 서버 `~/.local/bin/` |
 | `ssh-claude-xclip-mac.py` | 맥 상주 데몬 (클립보드 감시 → 자동 업로드) | 맥 `~/bin/` |
 | `ai.popup.ssh-claude-xclip.plist` | 데몬 launchd 등록 (로그인 시 자동 시작, 죽으면 재시작) | 맥 `~/Library/LaunchAgents/` |
 | `ssh-claude-xclip-server` | 가짜 xclip (서버) | 서버 `~/.local/bin/xclip` (심링크) |
 | `ssh-claude-xclip-vscode/` | 미니 VS Code 확장 (Cmd+Shift+V 경로 타이핑) | 맥 `~/.vscode/extensions/` |
+
+### 여러 계정으로 동시에 올릴 때
+
+같은 서버라도 **접속 계정이 다르면 `/tmp` 파일의 주인이 달라진다.** 가짜 xclip은 자기 소유
+파일만 집으므로, 데몬은 쓰는 계정 전부에 뿌려두고 "한 곳이라도 성공하면 성공"으로 친다.
+
+```mermaid
+graph LR
+    D["맥 데몬"]
+    D ==>|"ssh (키 인증)"| A["ubuntu@서버<br/>/tmp/clip-….png"]
+    D -.->|"ssh — TOTP 요구로 거부"| B["sooa@서버"]
+    D ==>|"ssh (ControlMaster 소켓 경유)"| B
+    V["VS Code 세션<br/>사람이 TOTP 1회 입력"] -.->|"인증된 연결을 소켓으로 공유"| B
+
+    A --> OK["⌘V 붙여넣기 OK"]
+    B --> OK
+```
+
+TOTP를 매번 요구하는 계정은 직접 붙을 수 없다. 대신 사람이 VS Code로 인증해둔 세션을
+`ControlMaster` 소켓으로 재사용한다 — 재인증이 아니라 **이미 열린 연결 안에 채널만 하나 더
+여는 것**이라 인증 절차 자체가 일어나지 않는다.
 
 ## 원리
 
