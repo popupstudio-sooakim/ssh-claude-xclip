@@ -41,6 +41,11 @@ that). Save anything worth keeping somewhere else.
 | `ai.popup.ssh-claude-xclip.plist` | launchd registration | Mac `~/Library/LaunchAgents/` |
 | `ssh-claude-xclip-server` | fake `xclip` intercepting the call Claude Code already makes (~60 lines of bash) | Server `~/.local/bin/xclip` |
 | `ssh-claude-xclip-vscode/` | mini VS Code extension for `Cmd+Shift+V` (21 lines) | Mac `~/.vscode/extensions/` |
+| `ssh-claude-xclip` | CLI for both sides — `install` / `update` / `status` / `doctor` / `remote` | Mac `~/bin/`, Server `~/.local/bin/` |
+
+Install and update on either side with one command; `ssh-claude-xclip doctor` walks the whole
+chain (daemon → SSH reachability → a real upload round-trip → file ownership) and tells you
+where it broke.
 
 ### Requirements
 
@@ -165,40 +170,33 @@ ssh my-server 'echo OK'
 **1) 맥에서**
 
 ```bash
-git clone https://github.com/popupstudio-sooakim/ssh-claude-xclip.git /tmp/ssh-claude-xclip
-cd /tmp/ssh-claude-xclip
-
-mkdir -p ~/bin && cp ssh-claude-xclip-mac.py ~/bin/
-cp ai.popup.ssh-claude-xclip.plist ~/Library/LaunchAgents/
-sed -i '' "s/YOURNAME/$(whoami)/" ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
-
-mkdir -p ~/.vscode/extensions && cp -r ssh-claude-xclip-vscode ~/.vscode/extensions/
+curl -fsSL https://raw.githubusercontent.com/popupstudio-sooakim/ssh-claude-xclip/main/ssh-claude-xclip | bash -s install
 ```
 
-**업로드 대상을 당신 별칭으로 바꾼다.** plist에는 `popup-server`가 기본값으로 박혀 있어서,
-이걸 안 고치면 존재하지 않는 호스트로 업로드를 시도하게 된다:
+이 한 줄이 저장소를 `~/.ssh-claude-xclip` 에 받고, 데몬·VS Code 확장·`ssh-claude-xclip`
+명령어까지 깔고 데몬을 띄운다. **이후로는 curl 없이 `ssh-claude-xclip` 명령으로 다 된다.**
+
+이어서 업로드 대상을 0번에서 정한 별칭으로 지정한다 (기본값이 `popup-server`라 안 바꾸면
+존재하지 않는 호스트로 업로드를 시도하게 된다):
 
 ```bash
-# my-server 자리에 0번에서 정한 별칭을 넣을 것
-sed -i '' "s|<string>popup-server</string>|<string>my-server</string>|" \
-  ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
-
-launchctl load ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
+ssh-claude-xclip remote my-server      # ← 당신 별칭
 ```
+
+> `ssh-claude-xclip: command not found` 가 나오면 `~/bin` 이 PATH에 없는 것이다.
+> `export PATH="$HOME/bin:$PATH"` 를 `~/.zshrc` 에 넣고 셸을 다시 열면 된다.
+> (설치 자체는 이미 끝난 상태다 — 데몬은 절대경로로 돌기 때문에 PATH와 무관하게 동작한다.)
 
 그리고 VS Code에서 `Cmd+Shift+P` → `Developer: Reload Window` (⌘⇧V 확장 반영).
 
 **2) 서버에서**
-```bash
-git clone https://github.com/popupstudio-sooakim/ssh-claude-xclip.git ~/ssh-claude-xclip
-mkdir -p ~/.local/bin
-ln -sf ~/ssh-claude-xclip/ssh-claude-xclip-server ~/.local/bin/xclip
 
-# 확인: 가짜 xclip이 진짜 xclip보다 PATH 앞에 있어야 한다
-command -v xclip     # → /home/<나>/.local/bin/xclip 이 나와야 성공
+```bash
+curl -fsSL https://raw.githubusercontent.com/popupstudio-sooakim/ssh-claude-xclip/main/ssh-claude-xclip | bash -s install
 ```
 
-`~/.local/bin`이 안 나오거나 `/usr/bin/xclip`이 나오면 PATH 앞순위가 아니다. `~/.bashrc`(zsh면 `~/.zshrc`)에 아래를 넣고 셸을 다시 열 것:
+가짜 xclip 심링크(`~/.local/bin/xclip`)까지 걸린다. `~/.local/bin` 이 PATH 앞에 없으면
+설치 중에 경고가 뜨는데, 그때는 `~/.bashrc`(zsh면 `~/.zshrc`)에 넣고 셸을 다시 열 것:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -206,38 +204,52 @@ export PATH="$HOME/.local/bin:$PATH"
 
 **3) 설치 확인**
 
-맥에서 캡쳐 한 번(⌃⌘⇧4) → 서버에서:
+맥에서 캡쳐 한 번(⌃⌘⇧4) 한 뒤:
 
 ```bash
-ls -t /tmp/clip-*.png | head -1      # 방금 파일이 보이면 성공
+ssh-claude-xclip doctor
 ```
 
-안 보이면 맥의 `/tmp/ssh-claude-xclip.log`에 실패 사유가 남는다.
+설치 상태 · 대상 서버 접속 · 실제 업로드 왕복까지 짚어준다. 막힌 지점이 있으면
+그 자리에서 해결 방법까지 알려준다. 서버에서도 똑같이 `ssh-claude-xclip doctor` 를 쓸 수 있다.
+
+---
+
+## 명령어
+
+| 명령 | 하는 일 |
+|---|---|
+| `ssh-claude-xclip update` | 최신으로 갱신 (맥·서버 양쪽. 실행 위치를 자동 판별한다) |
+| `ssh-claude-xclip status` | 데몬 상태 · 업로드 대상 · 최근 로그 요약 |
+| `ssh-claude-xclip doctor` | **안 될 때 이것부터.** 어디서 막혔는지와 해결법 |
+| `ssh-claude-xclip remote [별칭,...]` | 업로드 대상 보기 / 바꾸기 (plist 수정 + 재기동까지 한 번에) |
+| `ssh-claude-xclip restart` | 데몬 재기동 |
+| `ssh-claude-xclip log [-f]` | 실패 로그 |
 
 ---
 
 ## 여러 계정·여러 서버에 동시에 올리기
 
-`SSH_CLAUDE_XCLIP_REMOTE`에 **쉼표로 여러 별칭**을 줄 수 있다. 전부에 병렬로 업로드하고,
+업로드 대상에 **쉼표로 여러 별칭**을 줄 수 있다. 전부에 병렬로 업로드하고,
 한 곳이라도 성공하면 그 캡쳐는 성공으로 친다.
 
-```xml
-<key>SSH_CLAUDE_XCLIP_REMOTE</key><string>popup-ubuntu-dev,popup-server</string>
+```bash
+ssh-claude-xclip remote popup-ubuntu-dev,popup-server
 ```
+
+> 위 두 별칭은 우리 조직 값이다. 당신이 쓰는 별칭으로 바꿀 것.
 
 왜 필요하냐면 — **같은 서버라도 접속 계정이 다르면 업로드한 `/tmp` 파일의 주인이 달라진다.**
 가짜 xclip은 자기 소유 파일만 집으므로, `sooa`로 올려둔 파일은 `ubuntu`로 띄운 Claude Code가
 집지 못한다. 그날그날 어느 계정으로 붙을지 데몬은 알 수 없으니, **쓰는 계정을 전부 나열해두면**
 어느 쪽으로 접속하든 붙여넣기가 된다.
 
-> 위 예시의 두 별칭은 우리 조직 값이다. 당신이 쓰는 별칭으로 바꿀 것.
-
-**바꾸고 나면 데몬 재기동**이 필요하다. launchd는 셸의 `export`를 상속하지 않아서,
-터미널에서 환경변수를 줘봐야 데몬엔 닿지 않는다:
+`remote` 명령은 plist 수정과 데몬 재기동을 함께 처리한다. launchd는 셸의 `export`를
+상속하지 않아서 터미널에서 환경변수를 줘봐야 데몬엔 닿지 않는데, 이걸 사람이 자주 잊기 때문에
+한 명령으로 묶어뒀다. 지금 설정을 보려면 인자 없이:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
-launchctl load   ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
+ssh-claude-xclip remote
 ```
 
 ---
@@ -302,14 +314,31 @@ ssh -o ConnectTimeout=10 <별칭> true </dev/null && echo "무인증 OK"
 
 ## 업데이트
 
-이미 설치한 사람은 **맥에서** 아래 한 줄이면 최신으로 갱신된다 (파일 덮어쓰기 + 데몬 재기동).
-실행 후 VS Code에서 `Developer: Reload Window`로 확장까지 반영:
+**맥과 서버 양쪽에서** 각각:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/popupstudio-sooakim/ssh-claude-xclip/main/ssh-claude-xclip-update | bash
+ssh-claude-xclip update
 ```
-서버 쪽(가짜 xclip)도 갱신하려면 **서버에서** 같은 한 줄을 실행하거나 `git -C ~/ssh-claude-xclip pull`.
-(스크립트가 맥/서버를 자동 판별한다. plist는 사용자명이 박혀 있어 덮지 않으니, plist가 바뀐 릴리스면 그때만 수동 재설치.)
+
+실행 위치가 맥인지 서버인지 자동 판별한다. 맥이면 파일을 덮고 데몬을 재기동하고,
+서버면 clone을 pull 한다(가짜 xclip 심링크가 새 파일을 자동 반영). 맥에서는 실행 후
+VS Code `Developer: Reload Window` 로 확장까지 반영할 것.
+
+설정해둔 업로드 대상은 업데이트해도 보존된다 — plist를 통째로 덮지 않고 비어 있는 키만
+채우기 때문이다. 바꾸고 싶으면 `ssh-claude-xclip remote` 를 쓰면 된다.
+
+<details>
+<summary>아직 CLI가 없는 구버전에서 올라오는 경우</summary>
+
+`ssh-claude-xclip: command not found` 가 나오면 CLI가 깔리기 전 버전이다.
+설치와 같은 한 줄을 쓰면 CLI까지 함께 들어온다:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/popupstudio-sooakim/ssh-claude-xclip/main/ssh-claude-xclip | bash -s install
+```
+
+예전에 안내하던 `ssh-claude-xclip-update` 주소도 그대로 동작한다 (내부에서 위 명령을 부른다).
+</details>
 
 
 ## 버전

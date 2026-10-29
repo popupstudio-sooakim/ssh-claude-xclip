@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# ssh-claude-xclip — 맥/서버 공용 CLI.
+#
+#   ssh-claude-xclip install     설치 (최초 1회. 부트스트랩도 이걸 부른다)
+#   ssh-claude-xclip update      최신으로 갱신
+#   ssh-claude-xclip status      지금 어떤 상태인지 한 눈에
+#   ssh-claude-xclip doctor      안 될 때 — 어디서 막혔는지 짚어준다
+#   ssh-claude-xclip remote      업로드 대상 보기/바꾸기 (맥)
+#   ssh-claude-xclip restart     데몬 재기동 (맥)
+#   ssh-claude-xclip log         실패 로그 (맥)
+#
+# install과 update는 같은 코드 경로다. 설치 스크립트와 갱신 스크립트가 갈라지면
+# "설치는 되는데 업데이트하면 깨지는" 조합이 생긴다 — 한 길로 묶어 그걸 막는다.
+#
+# 맥이냐 서버냐는 uname으로 판별한다. 두 쪽이 하는 일이 전혀 다르기 때문에
+# 사용자에게 묻지 않고 알아서 가른다.
+set -euo pipefail
+
+REPO="${SSH_CLAUDE_XCLIP_REPO:-https://github.com/popupstudio-sooakim/ssh-claude-xclip.git}"
+PLIST="$HOME/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist"
+LOGFILE="${SSH_CLAUDE_XCLIP_LOG:-/tmp/ssh-claude-xclip.log}"
+PB=/usr/libexec/PlistBuddy
+
+if [ "$(uname)" = "Darwin" ]; then
+  IS_MAC=1
+  # 맥은 파일을 "복사"해 설치하므로 원본 clone을 따로 보관한다. 버전 확인과
+  # 다음 update의 pull 대상이 된다. (예전엔 /tmp에 받고 버려서 뭐가 깔렸는지 알 수 없었다)
+  SRC="${SSH_CLAUDE_XCLIP_HOME:-$HOME/.ssh-claude-xclip}"
+  BINDIR="$HOME/bin"
+else
+  IS_MAC=0
+  # 서버는 가짜 xclip이 clone을 가리키는 심링크라 clone 자체가 설치본이다.
+  SRC="${SSH_CLAUDE_XCLIP_HOME:-$HOME/ssh-claude-xclip}"
+  BINDIR="$HOME/.local/bin"
+fi
+
+# ── 출력 ────────────────────────────────────────────────────
+c_ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+c_bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+c_warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+c_info() { printf '    %s\n' "$*"; }
+head1()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+die()    { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── ssh 호출 규약 ───────────────────────────────────────────
+# BatchMode=yes 를 쓰지 않는다. 그 옵션은 keyboard-interactive 인증 "방식 자체"를
+# 협상에서 빼버려서, 서버가 publickey+keyboard-interactive 를 요구하면 TOTP가 걸려
+# 있지 않아 원래는 통과할 계정까지 거부로 나온다. 멀쩡한 서버를 "2FA 때문"이라고
+# 오진하게 만드는 함정이라, 데몬도 이 CLI도 쓰지 않는다. (ARCHITECTURE.md 참고)
+#
+# 대신 askpass를 강제 실패시킨다 — 프롬프트가 뜨면 멈추지 않고 즉시 끝난다.
+ssh_q() {
+  SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=force \
+    ssh -o ConnectTimeout=10 "$@" </dev/null
+}
+
+daemon_pid() {
+  # `launchctl list | grep -q` 로 쓰면 안 된다. grep -q 는 매치 즉시 종료하는데,
+  # 그러면 launchctl 이 SIGPIPE(141)로 죽고 set -o pipefail 이 파이프라인 전체를
+  # 실패로 판정한다 — 데몬이 멀쩡히 떠 있는데 "안 떠 있다"고 오진하게 된다.
+  # awk 로 끝까지 읽고 END 에서 출력해 조기 종료 자체를 없앤다.
+  launchctl list 2>/dev/null | awk '/ai\.popup\.ssh-claude-xclip/{p=$1} END{if(p)print p}' || true
+}
+
+remotes_of() {
+  # plist에 적힌 업로드 대상 목록. 쉼표/공백 구분을 줄바꿈으로 펴서 돌려준다.
+  [ -f "$PLIST" ] || return 0
+  $PB -c 'Print :EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE' "$PLIST" 2>/dev/null \
+    | tr ', ' '\n' | grep -v '^$' || true
+}
+
+sync_src() {
+  # clone이 있으면 pull, 없으면 clone. install과 update가 공유하는 유일한 입구.
+  if [ -d "$SRC/.git" ]; then
+    git -C "$SRC" pull -q --ff-only || die "pull 실패: $SRC — 로컬 수정이 있다면 정리 후 다시 시도하세요."
+  else
+    mkdir -p "$(dirname "$SRC")"
+    git clone -q "$REPO" "$SRC" || die "clone 실패: $REPO"
+  fi
+}
+
+cmd_install() {
+  sync_src
+  mkdir -p "$BINDIR"
+  # CLI 자신을 먼저 깐다 — 이후로는 curl 없이 `ssh-claude-xclip update` 만으로 돈다.
+  cp "$SRC/ssh-claude-xclip" "$BINDIR/ssh-claude-xclip"
+  chmod +x "$BINDIR/ssh-claude-xclip"
+
+  if [ "$IS_MAC" = 1 ]; then
+    cp "$SRC/ssh-claude-xclip-mac.py" "$BINDIR/"
+    # VS Code 전용. Cursor(~/.cursor/extensions)·Insiders는 아직 다루지 않는다 (README 참고).
+    mkdir -p "$HOME/.vscode/extensions"
+    rm -rf "$HOME/.vscode/extensions/ssh-claude-xclip-vscode"
+    cp -r "$SRC/ssh-claude-xclip-vscode" "$HOME/.vscode/extensions/"
+
+    if [ -f "$PLIST" ]; then
+      # 기존 plist는 통째로 덮지 않는다 — 사용자가 고쳐둔 업로드 대상이 날아간다.
+      # 새로 생긴 키만 없을 때 채운다.
+      $PB -c 'Add :EnvironmentVariables dict' "$PLIST" 2>/dev/null || true
+      $PB -c 'Add :EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE string popup-server' "$PLIST" 2>/dev/null || true
+      $PB -c 'Add :StandardErrorPath string /tmp/ssh-claude-xclip.log' "$PLIST" 2>/dev/null || true
+    else
+      mkdir -p "$HOME/Library/LaunchAgents"
+      sed "s/YOURNAME/$(whoami)/" "$SRC/ai.popup.ssh-claude-xclip.plist" > "$PLIST"
+      c_warn "업로드 대상이 기본값(popup-server)입니다. 당신 ssh 별칭으로 바꾸세요:"
+      c_info "ssh-claude-xclip remote <별칭>[,<별칭2>...]"
+    fi
+    cmd_restart
+
+    case ":$PATH:" in
+      *":$BINDIR:"*) ;;
+      *) c_warn "$BINDIR 가 PATH에 없습니다. 아래를 ~/.zshrc 에 넣고 셸을 다시 여세요:"
+         c_info "export PATH=\"\$HOME/bin:\$PATH\"" ;;
+    esac
+    c_ok "맥 설치 완료 ($(cmd_version))"
+    c_info "VS Code에서 'Developer: Reload Window' 를 한 번 실행하세요 (⌘⇧V 확장 반영)."
+  else
+    mkdir -p "$BINDIR"
+    ln -sf "$SRC/ssh-claude-xclip-server" "$BINDIR/xclip"
+    c_ok "서버 설치 완료 ($(cmd_version))"
+    if [ "$(command -v xclip || true)" != "$BINDIR/xclip" ]; then
+      c_warn "PATH에서 가짜 xclip이 앞순위가 아닙니다 — 가로채기가 동작하지 않습니다."
+      c_info "현재: $(command -v xclip || echo '없음')"
+      c_info "~/.bashrc(zsh면 ~/.zshrc)에 넣고 셸을 다시 여세요:"
+      c_info "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+    case ":$PATH:" in
+      *":$BINDIR:"*) ;;
+      *) c_warn "$BINDIR 가 PATH에 없어 'ssh-claude-xclip' 명령이 안 잡힐 수 있습니다." ;;
+    esac
+  fi
+}
+
+cmd_restart() {
+  [ "$IS_MAC" = 1 ] || die "restart는 맥 전용입니다 (서버엔 데몬이 없습니다)."
+  [ -f "$PLIST" ] || die "plist가 없습니다. 먼저 'ssh-claude-xclip install'."
+  launchctl unload "$PLIST" 2>/dev/null || true
+  launchctl load "$PLIST"
+  c_ok "데몬 재기동"
+}
+
+cmd_remote() {
+  [ "$IS_MAC" = 1 ] || die "remote는 맥 전용입니다."
+  [ -f "$PLIST" ] || die "plist가 없습니다. 먼저 'ssh-claude-xclip install'."
+  if [ $# -eq 0 ]; then
+    echo "현재 업로드 대상: $(remotes_of | paste -sd, -)"
+    echo "바꾸려면: ssh-claude-xclip remote <별칭>[,<별칭2>...]"
+    return
+  fi
+  # launchd는 셸의 export를 상속하지 않는다. 그래서 환경변수를 plist에 박고
+  # 재기동까지 해줘야 실제로 반영된다 — 사람이 이걸 자주 잊어서 명령으로 묶었다.
+  $PB -c 'Add :EnvironmentVariables dict' "$PLIST" 2>/dev/null || true
+  $PB -c "Set :EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE $1" "$PLIST" 2>/dev/null \
+    || $PB -c "Add :EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE string $1" "$PLIST"
+  c_ok "업로드 대상 → $1"
+  cmd_restart
+}
+
+cmd_log() {
+  [ -f "$LOGFILE" ] || { echo "로그 없음 ($LOGFILE) — 아직 실패한 적이 없다는 뜻입니다."; return; }
+  if [ "${1:-}" = "-f" ]; then tail -f "$LOGFILE"; else tail -30 "$LOGFILE"; fi
+}
+
+cmd_version() {
+  if [ -d "$SRC/.git" ]; then
+    git -C "$SRC" log -1 --format='%h %ad' --date=short 2>/dev/null || echo "unknown"
+  else
+    echo "unknown (clone 없음)"
+  fi
+}
+
+cmd_status() {
+  head1 "ssh-claude-xclip $(cmd_version)"
+  if [ "$IS_MAC" = 1 ]; then
+    pid=$(daemon_pid)
+    if [ -n "$pid" ]; then
+      c_ok "데몬 구동 중 (pid $pid)"
+    else
+      c_bad "데몬이 떠 있지 않습니다 — 'ssh-claude-xclip restart'"
+    fi
+    echo "  업로드 대상: $(remotes_of | paste -sd, - || echo '(없음)')"
+    if [ -f "$LOGFILE" ]; then
+      echo "  최근 로그:"
+      tail -3 "$LOGFILE" | sed 's/^/    /'
+    fi
+  else
+    [ -L "$BINDIR/xclip" ] && c_ok "가짜 xclip 심링크 있음" || c_bad "가짜 xclip 심링크 없음"
+    [ "$(command -v xclip || true)" = "$BINDIR/xclip" ] \
+      && c_ok "PATH 앞순위 OK" || c_bad "PATH 앞순위 아님: $(command -v xclip || echo 없음)"
+    n=$( (ls -1 /tmp/clip-* 2>/dev/null || true) | wc -l | tr -d ' ')
+    echo "  /tmp에 올라온 파일: ${n}개"
+  fi
+}
+
+doctor_mac() {
+  head1 "1. 설치 상태"
+  [ -f "$BINDIR/ssh-claude-xclip-mac.py" ] && c_ok "데몬 스크립트" || c_bad "데몬 스크립트 없음 — install 필요"
+  [ -f "$PLIST" ] && c_ok "plist" || c_bad "plist 없음 — install 필요"
+  [ -d "$HOME/.vscode/extensions/ssh-claude-xclip-vscode" ] \
+    && c_ok "VS Code 확장" || c_warn "VS Code 확장 없음 — ⌘⇧V 경로 타이핑이 빠집니다"
+  if [ -n "$(daemon_pid)" ]; then
+    c_ok "데몬 구동 중"
+  else
+    c_bad "데몬이 떠 있지 않습니다 — 'ssh-claude-xclip restart'"
+  fi
+
+  head1 "2. 업로드 대상 접속"
+  rs=$(remotes_of)
+  [ -n "$rs" ] || { c_bad "업로드 대상이 비어 있습니다 — 'ssh-claude-xclip remote <별칭>'"; return; }
+  for r in $rs; do
+    if ssh_q "$r" true 2>/dev/null; then
+      c_ok "$r — 사람 개입 없이 접속 OK"
+    else
+      # ssh가 실패한 상태에서 파이프로 넘기면 pipefail이 걸려 set -e가 스크립트를
+      # 통째로 죽인다. 진단 도구가 "첫 실패에서 멈추는" 건 가장 쓸모없는 동작이라 막는다.
+      err=$( (ssh_q "$r" true 2>&1 >/dev/null || true) | tail -1 )
+      c_bad "$r — 접속 실패"
+      c_info "$err"
+      case "$err" in
+        *keyboard-interactive*)
+          # 이 메시지는 두 가지를 동시에 뜻할 수 있어서 안내를 나눠준다.
+          c_info "서버가 접속마다 인증 코드(TOTP)를 요구하는 상태입니다."
+          if ssh -O check "$r" >/dev/null 2>&1; then
+            c_info "→ ControlMaster 세션은 살아 있는데도 실패했습니다. 설정을 확인하세요."
+          else
+            c_info "→ ~/.ssh/config 의 '$r' 에 아래를 넣고 VS Code로 한 번 재접속하세요:"
+            c_info "     ControlMaster auto"
+            c_info "     ControlPath ~/.ssh/cm-%C"
+            c_info "     ControlPersist 8h"
+            c_info "   사람이 인증해둔 세션에 데몬이 얹히는 방식이라 재인증이 안 일어납니다."
+          fi ;;
+        *"Could not resolve"*|*"Name or service"*)
+          c_info "→ ~/.ssh/config 에 '$r' Host 별칭이 없습니다. 오타이거나 미등록입니다." ;;
+      esac
+    fi
+  done
+
+  head1 "3. 실제 업로드 (왕복 테스트)"
+  probe="/tmp/ssh-claude-xclip-doctor.$$"
+  for r in $rs; do
+    if echo "doctor" | SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=force \
+         ssh -o ConnectTimeout=10 "$r" "cat > $probe && rm -f $probe" 2>/dev/null; then
+      c_ok "$r — 업로드 성공"
+    else
+      c_bad "$r — 업로드 실패 (위 2번 사유와 같습니다)"
+    fi
+  done
+
+  head1 "4. 계정 일치"
+  c_info "가짜 xclip은 '자기 소유' 파일만 집습니다. 업로드 계정과 Claude Code 계정이"
+  c_info "다르면 파일은 올라가는데 붙여넣기만 안 됩니다. 서버 터미널에서 확인:"
+  c_info "  ls -l /tmp/clip-* | tail -3   # 주인이 whoami 와 같아야 함"
+  c_info "계정을 여럿 쓴다면 전부 나열하세요: ssh-claude-xclip remote a,b"
+
+  head1 "5. 최근 실패 로그"
+  if [ -f "$LOGFILE" ]; then tail -5 "$LOGFILE" | sed 's/^/    /'; else c_ok "실패 기록 없음"; fi
+}
+
+doctor_server() {
+  head1 "1. 가짜 xclip 가로채기"
+  [ -L "$BINDIR/xclip" ] && c_ok "심링크 있음" || c_bad "심링크 없음 — 'ssh-claude-xclip install'"
+  if [ "$(command -v xclip || true)" = "$BINDIR/xclip" ]; then
+    c_ok "PATH 앞순위 OK"
+  else
+    c_bad "앞순위 아님: $(command -v xclip || echo 없음)"
+    c_info "export PATH=\"\$HOME/.local/bin:\$PATH\" 를 셸 설정에 넣으세요."
+  fi
+
+  head1 "2. 서버 요건"
+  command -v bash >/dev/null && c_ok "bash 있음" || c_bad "bash 없음 (가짜 xclip이 bash 전용)"
+  if stat -c %Y /tmp >/dev/null 2>&1 || stat -f %m /tmp >/dev/null 2>&1; then
+    c_ok "stat 지원 (신선도 검사 가능)"
+  else
+    c_bad "stat -c/-f 둘 다 실패 — 모든 파일이 '오래됨'으로 판정됩니다"
+  fi
+
+  head1 "3. 올라온 파일과 주인"
+  me=$(whoami)
+  latest=$( (ls -t /tmp/clip-* 2>/dev/null || true) | head -1 )
+  if [ -z "$latest" ]; then
+    c_warn "/tmp 에 업로드된 파일이 없습니다 — 맥에서 'ssh-claude-xclip doctor' 를 돌려보세요."
+  else
+    owner=$(ls -l "$latest" | awk '{print $3}')
+    if [ "$owner" = "$me" ]; then
+      c_ok "최신 파일 주인이 나($me) — 붙여넣기 가능"
+    else
+      c_bad "최신 파일 주인이 '$owner' 인데 당신은 '$me' 입니다"
+      c_info "가짜 xclip은 자기 소유 파일만 집습니다. 맥에서 업로드 대상에"
+      c_info "'$me' 로 접속하는 별칭을 추가하세요: ssh-claude-xclip remote <기존>,<새별칭>"
+    fi
+    c_info "$latest"
+  fi
+}
+
+cmd_doctor() {
+  head1 "ssh-claude-xclip doctor  ($([ "$IS_MAC" = 1 ] && echo 맥 || echo 서버), $(cmd_version))"
+  if [ "$IS_MAC" = 1 ]; then doctor_mac; else doctor_server; fi
+  echo
+}
+
+cmd_help() {
+  # 파일 맨 위 주석 블록이 곧 사용법이다. 줄번호로 자르면 주석이 길어질 때마다
+  # 코드까지 새어 나오므로, 첫 비주석 줄에서 멈춘다.
+  awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
+}
+
+case "${1:-help}" in
+  install)        shift; cmd_install "$@" ;;
+  update|upgrade) shift; cmd_install "$@" ;;   # 같은 경로. 갈라두면 조합 버그가 생긴다.
+  status)         shift; cmd_status "$@" ;;
+  doctor)         shift; cmd_doctor "$@" ;;
+  remote)         shift; cmd_remote "$@" ;;
+  restart)        shift; cmd_restart "$@" ;;
+  log|logs)       shift; cmd_log "$@" ;;
+  version|--version|-v) cmd_version ;;
+  help|--help|-h) cmd_help ;;
+  *) die "알 수 없는 명령: $1 ('ssh-claude-xclip help')" ;;
+esac
