@@ -82,7 +82,7 @@ Design notes and troubleshooting: [ARCHITECTURE.md](ARCHITECTURE.md) (Korean).
 | | 필요한 것 |
 |---|---|
 | 맥 | macOS + **VS Code** (Remote-SSH로 서버에 접속) |
-| 에디터 | **VS Code 전용.** Cursor·VS Code Insiders·JetBrains·순수 터미널은 **아직 지원하지 않는다** (아래 참고) |
+| 에디터 | **VS Code 전용.** Cursor·VS Code Insiders·JetBrains·순수 터미널은 **아직 지원하지 않는다**. ⌘⇧V 경로 타이핑만 빠지고, 업로드와 Ctrl+V 첨부는 동작한다 |
 | 서버 | Linux(+bash), 맥에서 **비밀번호 없이** ssh 접속 가능 |
 
 ## 설치법
