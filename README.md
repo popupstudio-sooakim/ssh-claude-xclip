@@ -99,7 +99,7 @@ Design notes and troubleshooting: [ARCHITECTURE.md](ARCHITECTURE.md) (Korean).
 | `popup-server`, `popup-ubuntu-dev` | 우리 `~/.ssh/config`의 **Host 별칭** | 당신이 쓰는 별칭으로 교체 |
 | `43.200.38.93` | 우리 개발 서버 IP | 당신 서버 주소로 교체 |
 | `sooa`, `ubuntu` | 우리가 쓰는 서버 계정 | 당신 계정으로 교체 |
-| `Sooa-Popupstudio/ssh-claude-xclip` | 이 저장소 | 포크했다면 당신 저장소로 교체 |
+| `popupstudio-sooakim/ssh-claude-xclip` | 이 저장소 | 포크했다면 당신 저장소로 교체 |
 
 별칭 이름 자체는 뭐든 상관없다. **맥 `~/.ssh/config`의 Host 이름과 plist의
 `SSH_CLAUDE_XCLIP_REMOTE` 값이 서로 같기만 하면 된다.**
@@ -165,7 +165,7 @@ ssh my-server 'echo OK'
 **1) 맥에서**
 
 ```bash
-git clone https://github.com/Sooa-Popupstudio/ssh-claude-xclip.git /tmp/ssh-claude-xclip
+git clone https://github.com/popupstudio-sooakim/ssh-claude-xclip.git /tmp/ssh-claude-xclip
 cd /tmp/ssh-claude-xclip
 
 mkdir -p ~/bin && cp ssh-claude-xclip-mac.py ~/bin/
@@ -190,7 +190,7 @@ launchctl load ~/Library/LaunchAgents/ai.popup.ssh-claude-xclip.plist
 
 **2) 서버에서**
 ```bash
-git clone https://github.com/Sooa-Popupstudio/ssh-claude-xclip.git ~/ssh-claude-xclip
+git clone https://github.com/popupstudio-sooakim/ssh-claude-xclip.git ~/ssh-claude-xclip
 mkdir -p ~/.local/bin
 ln -sf ~/ssh-claude-xclip/ssh-claude-xclip-server ~/.local/bin/xclip
 
@@ -306,7 +306,7 @@ ssh -o ConnectTimeout=10 <별칭> true </dev/null && echo "무인증 OK"
 실행 후 VS Code에서 `Developer: Reload Window`로 확장까지 반영:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Sooa-Popupstudio/ssh-claude-xclip/main/ssh-claude-xclip-update | bash
+curl -fsSL https://raw.githubusercontent.com/popupstudio-sooakim/ssh-claude-xclip/main/ssh-claude-xclip-update | bash
 ```
 서버 쪽(가짜 xclip)도 갱신하려면 **서버에서** 같은 한 줄을 실행하거나 `git -C ~/ssh-claude-xclip pull`.
 (스크립트가 맥/서버를 자동 판별한다. plist는 사용자명이 박혀 있어 덮지 않으니, plist가 바뀐 릴리스면 그때만 수동 재설치.)

@@ -4,7 +4,7 @@
 #   서버에서 실행: repo clone에서 git pull (가짜 xclip 심링크가 새 파일을 자동 반영).
 # 실행 위치(맥/서버)는 uname으로 자동 판별한다.
 set -euo pipefail
-REPO="${SSH_CLAUDE_XCLIP_REPO:-https://github.com/Sooa-Popupstudio/ssh-claude-xclip.git}"
+REPO="${SSH_CLAUDE_XCLIP_REPO:-https://github.com/popupstudio-sooakim/ssh-claude-xclip.git}"
 
 if [ "$(uname)" = "Darwin" ]; then
   # ── 맥: 파일을 "복사"해 설치했으므로 새로 받아 덮어쓴다 ──
