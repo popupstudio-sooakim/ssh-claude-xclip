@@ -7,9 +7,9 @@
 #   → Ctrl+V: 서버의 가짜 xclip(ssh-claude-xclip-server)이 업로드된 최신 파일을 읽어 [Image #N] 첨부
 #   → Cmd+Shift+V: 미니 확장(ssh-claude-xclip-vscode)이 경로를 터미널에 타이핑 (⌘클릭으로 열림)
 #
-# 설정은 환경변수로: SSH_CLAUDE_XCLIP_REMOTE(기본 popup-server)
+# 설정은 환경변수로: SSH_CLAUDE_XCLIP_REMOTE (기본값 없음 — 설치 때 입력받는다)
 #   — launchd는 셸 환경을 상속하지 않으므로 plist의 EnvironmentVariables로 줄 것
-#   — 쉼표로 여러 개를 줄 수 있다: "popup-ubuntu-dev,popup-server"
+#   — 쉼표로 여러 개를 줄 수 있다: "me@host,teammate@host"
 #     같은 서버라도 접속 계정이 다르면 업로드한 /tmp 파일의 주인이 달라진다.
 #     어느 계정으로 작업하든 되게 하려면 쓰는 계정을 전부 나열할 것.
 #     한 곳이라도 성공하면 그 캡쳐는 성공으로 친다.
@@ -25,7 +25,7 @@ import tempfile
 import time
 
 REMOTES = [r for r in re.split(r"[,\s]+",
-           os.environ.get("SSH_CLAUDE_XCLIP_REMOTE", "popup-server").strip()) if r]
+           os.environ.get("SSH_CLAUDE_XCLIP_REMOTE", "").strip()) if r]
 
 # ssh 호출 규약 — 두 가지를 반드시 지킨다.
 #
@@ -277,4 +277,10 @@ def watcher():
             fail(f"데몬 오류: {type(e).__name__}", str(e))
 
 if __name__ == "__main__":
+    if not REMOTES:
+        # KeepAlive=true라 exit하면 launchd가 10초마다 되살려 로그만 쌓인다. 한 번 알리고 멈춰 있는다.
+        fail("업로드할 서버가 설정되지 않았습니다",
+             "'ssh-claude-xclip remote <별칭>' 으로 지정하세요.")
+        while True:
+            time.sleep(3600)
     watcher()

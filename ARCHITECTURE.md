@@ -153,14 +153,14 @@ xclip -selection clipboard -t image/png -o | file -    # → PNG image data
 | 서버를 바꿨는데 그대로 옛 서버로 감 | 셸에서 `export`한 환경변수는 launchd 데몬에 상속되지 않음 | plist의 `EnvironmentVariables:SSH_CLAUDE_XCLIP_REMOTE`를 고치고 `launchctl unload`/`load` |
 | 경로가 `[Image #N]`으로 변함 | Claude Code의 경로 자동 첨부 (끄기 불가). 의도된 동작 | 경로가 필요하면 Cmd+Shift+V(타이핑) |
 | ⌘클릭이 안 먹음 | 문서 속 자리표시자(`....`)를 클릭했거나 TUI 줄바꿈으로 경로가 쪼개짐. Claude Code 입력창 안은 재렌더링 때문에 불안정할 수 있음 | 셸에서 `ls -t /tmp/clip-*.png \| head -1` 출력을 클릭 |
-| `ssh popup-server ...` → 이름 해석 실패 | 서버에서 실행함 (별칭은 맥 config에만 있음) | 맥 터미널에서 실행 |
+| `ssh <별칭> ...` → 이름 해석 실패 | 서버에서 실행함 (별칭은 맥 `~/.ssh/config`에만 있음) | 맥 터미널에서 실행 |
 
 환경변수 (기본값으로 충분, 필요시 조정). **맥 데몬 쪽은 셸 `export`가 아니라
 plist의 `EnvironmentVariables`에 넣어야 한다** — launchd 에이전트는 셸 환경을 상속하지 않는다:
 
 | 변수 | 기본 | 어디서 | 뜻 |
 |---|---|---|---|
-| `SSH_CLAUDE_XCLIP_REMOTE` | `popup-server` | 맥 데몬 | 업로드 대상 ssh 별칭. **쉼표로 여러 개** 가능 — 전부에 병렬 업로드하고 한 곳이라도 성공하면 성공 |
+| `SSH_CLAUDE_XCLIP_REMOTE` | (없음, 설치 때 입력) | 맥 데몬 | 업로드 대상 ssh 별칭. **쉼표로 여러 개** 가능 — 전부에 병렬 업로드하고 한 곳이라도 성공하면 성공 |
 | `SSH_CLAUDE_XCLIP_PATH_SUFFIX` | (없음) | 맥 데몬 | 경로 텍스트 뒤 접미사 (`:1`이면 Cmd+V도 경로로 남음) |
 | `SSH_CLAUDE_XCLIP_LOG` | `/tmp/ssh-claude-xclip.log` | 맥 데몬 | 업로드 실패 로그 |
 | `SSH_CLAUDE_XCLIP_FAIL_NOTIFY_GAP` | `60` | 맥 데몬 | 실패 알림 최소 간격(초). 로그는 매번 남는다 |
@@ -216,6 +216,9 @@ Remote-SSH도 같은 config를 읽는 시스템 ssh를 쓰므로, 양쪽이 같�
 
 ## 주의점
 
+- **서버 주소는 코드·문서에 박지 않는다.** 설치할 때 물어보고 각자 맥의 plist에만 남긴다.
+  기본값을 두면 받아 쓰는 사람의 환경에서 엉뚱한 호스트를 향하고, 공개 저장소에 특정
+  조직의 인프라(주소·계정·별칭)가 그대로 드러난다.
 - **업로드 파일 권한.** `/tmp`는 공용(`drwxrwxrwt`)이고 이 도구는 사용자별 임시 디렉터리를
   쓰지 않는다. 그래서 파일 권한이 유일한 차단막이다. 업로드를 `umask 077; cat > …` 로 돌려
   **0600으로 생성**한다 — 이게 없으면 원격 셸의 umask(흔히 0002)를 그대로 따라 0664가 되고,

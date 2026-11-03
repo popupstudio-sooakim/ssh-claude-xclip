@@ -95,19 +95,13 @@ Design notes and troubleshooting: [ARCHITECTURE.md](ARCHITECTURE.md) (Korean).
 
 ---
 
-## ⚠️ 먼저: 이 문서에 박혀 있는 "우리 조직 값"
+## ⚠️ 먼저: 문서 속 예시 값
 
-아래 예시들은 Popup Studio 내부 환경 기준이다. **외부에서 쓰는 사람은 전부 자기 값으로 바꿔야 한다.**
+이 문서의 `my-server`, `10.0.0.5`, `myaccount`는 **전부 자리표시자**다. 당신 서버 값으로 바꿔 읽으면 된다.
 
-| 이 문서의 값 | 정체 | 당신이 할 일 |
-|---|---|---|
-| `popup-server`, `popup-ubuntu-dev` | 우리 `~/.ssh/config`의 **Host 별칭** | 당신이 쓰는 별칭으로 교체 |
-| `43.200.38.93` | 우리 개발 서버 IP | 당신 서버 주소로 교체 |
-| `sooa`, `ubuntu` | 우리가 쓰는 서버 계정 | 당신 계정으로 교체 |
-| `popupstudio-sooakim/ssh-claude-xclip` | 이 저장소 | 포크했다면 당신 저장소로 교체 |
-
-별칭 이름 자체는 뭐든 상관없다. **맥 `~/.ssh/config`의 Host 이름과 plist의
-`SSH_CLAUDE_XCLIP_REMOTE` 값이 서로 같기만 하면 된다.**
+서버 주소는 코드에도 문서에도 박혀 있지 않다. `ssh-claude-xclip install`이 **설치할 때 물어보고**
+당신 맥의 plist에만 기록한다. 별칭 이름은 뭐든 상관없다. **맥 `~/.ssh/config`의 Host 이름과
+`ssh-claude-xclip remote`로 지정한 값이 서로 같기만 하면 된다.**
 
 ---
 
@@ -133,23 +127,8 @@ Host my-server              # ← 별칭. 아무 이름이나. plist에 적을 �
     IdentityFile ~/.ssh/id_ed25519
 ```
 
-<details>
-<summary>참고: Popup Studio 내부 설정은 이렇게 되어 있다</summary>
-
-```
-Host popup-server
-    HostName 43.200.38.93
-    User sooa
-    IdentityFile ~/.ssh/id_ed25519
-
-Host popup-ubuntu-dev
-    HostName 43.200.38.93
-    User ubuntu
-    IdentityFile ~/.ssh/popupstudio-ubuntu-sooa
-```
-
-VS Code 왼쪽 아래에 이미 `SSH: popup-server` 같은 게 떠 있다면 별칭은 이미 등록된 것이다.
-</details>
+같은 서버를 **여러 계정**으로 쓴다면 계정마다 Host 블록을 따로 두고 둘 다 등록하면 된다.
+VS Code 왼쪽 아래에 `SSH: 무엇무엇`이 떠 있다면 그게 이미 등록된 별칭이다.
 
 아직 키가 없다면 만들어서 서버에 등록한다:
 
@@ -176,8 +155,10 @@ curl -fsSL https://raw.githubusercontent.com/popupstudio-sooakim/ssh-claude-xcli
 이 한 줄이 저장소를 `~/.ssh-claude-xclip` 에 받고, 데몬·VS Code 확장·`ssh-claude-xclip`
 명령어까지 깔고 데몬을 띄운다. **이후로는 curl 없이 `ssh-claude-xclip` 명령으로 다 된다.**
 
-이어서 업로드 대상을 0번에서 정한 별칭으로 지정한다 (기본값이 `popup-server`라 안 바꾸면
-존재하지 않는 호스트로 업로드를 시도하게 된다):
+설치 도중 **업로드할 서버를 물어본다.** 0번에서 정한 별칭(또는 `user@host`)을 입력하면 된다.
+기본값은 없다 — 특정 서버가 박혀 있으면 남의 환경에서 엉뚱한 곳을 향하기 때문이다.
+
+나중에 바꾸거나, 물음에 그냥 엔터를 쳤다면:
 
 ```bash
 ssh-claude-xclip remote my-server      # ← 당신 별칭
@@ -243,17 +224,15 @@ ssh-claude-xclip doctor
 한 곳이라도 성공하면 그 캡쳐는 성공으로 친다.
 
 ```bash
-ssh-claude-xclip remote popup-ubuntu-dev,popup-server
+ssh-claude-xclip remote dev-a,dev-b
 ```
 
-> 위 두 별칭은 우리 조직 값이다. 당신이 쓰는 별칭으로 바꿀 것.
-
-왜 필요하냐면 — **같은 서버라도 접속 계정이 다르면 업로드한 `/tmp` 파일의 주인이 달라진다.**
-가짜 xclip은 자기 소유 파일만 집으므로, `sooa`로 올려둔 파일은 `ubuntu`로 띄운 Claude Code가
+왜 필요하냐면 **같은 서버라도 접속 계정이 다르면 업로드한 `/tmp` 파일의 주인이 달라진다.**
+가짜 xclip은 자기 소유 파일만 집으므로, A 계정으로 올려둔 파일은 B 계정으로 띄운 Claude Code가
 집지 못한다. 그날그날 어느 계정으로 붙을지 데몬은 알 수 없으니, **쓰는 계정을 전부 나열해두면**
 어느 쪽으로 접속하든 붙여넣기가 된다.
 
-대상이 둘 이상이면 **파일명에 별칭이 붙는다** (`clip-20261029-100227-popup-server.png`).
+대상이 둘 이상이면 **파일명에 별칭이 붙는다** (`clip-20261029-100227-dev-a.png`).
 같은 서버의 다른 계정을 함께 쓰면 `/tmp`가 공유되는데, 같은 경로로 올리면 먼저 쓴 쪽이
 파일 주인이 되고 진 쪽은 덮어쓰지 못해 조용히 실패하기 때문이다. 이때 ⌘⇧V는 성공한 경로를
 전부 타이핑한다 — 지금 어느 계정에 붙어 있는지는 데몬이 알 수 없으므로 사람이 고른다.
